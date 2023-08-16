@@ -398,12 +398,14 @@ class Arima():
         mads = []  # type: List[float]
 
         for n in range(self.n):
-            a = predictions[n::self.n] - df[n::self.n]
-            mads.append(a.abs().median() * 1.4826 * 3)
-# XXX Alternate approach for eliminating outliers is to find the
-# difference between 50th and 1st percentile.  Still has problems, but
-# different problems.
-#            a.median() - a.quantile(.01)
+            y = pd.DataFrame(df[n::self.n], columns=['signalValue'])
+            x = pd.DataFrame({'signalValue': predictions[n::self.n]}, index=y.index)
+
+            mins = np.minimum(x['signalValue'], y['signalValue'])
+            mins_df = pd.DataFrame({'signalValue': mins}, index=x.index)
+            a = (x - y).abs()
+            z = a / mins_df
+            mads.append(1 - (z.median().item() * 1.4826 * 3))
 
         return mads
 
