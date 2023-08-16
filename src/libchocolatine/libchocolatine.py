@@ -379,7 +379,7 @@ class ChocolatineDetector(object):
         dbmodel = self.lookupModelInDatabase(serieskey)
         now = time.time()
         if dbmodel is None or now - dbmodel["generated_at"] > MODEL_LIFETIME:
-            if dbmodel and dbmodel["generated_at"] > timestamp:
+            if dbmodel and dbmodel["training_start"] > timestamp:
                 # only replace a model if we are processing more recent data
                 # than the data that was used to generate the old model
                 pass
