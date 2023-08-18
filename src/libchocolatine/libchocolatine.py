@@ -538,9 +538,9 @@ class ChocolatineDetector(object):
                 "timestamp": timestamp,
                  "observed": value,
                  "predicted": p["forecast"],
-                 "threshold": p["forecast"] - s.pred_intervals[p["index"]],
-                 "norm_threshold": p["forecast"] - \
-                        (s.pred_intervals[p["index"]] / 4),
+                 "threshold": p["forecast"] * s.pred_intervals[p["index"]],
+                 "norm_threshold": p["forecast"] * \
+                        (1 - ((1 - s.pred_intervals[p["index"]]) * 0.33)),
                  "alertable": False,
                  "baseline": s.baseline,
             }
