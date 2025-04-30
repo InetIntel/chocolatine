@@ -206,27 +206,47 @@ class ChocModeller(object):
 
 
     def _fetchData(self, injob):
-        fetched, meta = fetchIodaHistoricBlocking(self.iodaapiurl,
-                injob['fqid'], injob['ts'], self.arimahistory, 1800)
+        tofetch = self.arimahistory
+        startts = injob['ts'] - self.arimahistory
 
-        if fetched is None:
-            return None, None
-
-        # Convert the data into a usable pandas dataframe
-        t = fetched['from']
-        step = fetched['step']
-        serieskey = injob['fqid']
+        finalmeta = {}
 
         res = []
-        for v in fetched['values']:
-            res.append({"timestamp": pd.Timestamp(t, unit='s'),
-                        "signalValue": v})
-            t += step
+        while tofetch > 0:
+            amount = min(tofetch, 90 * 24 * 60 * 60)
 
-        meta['step'] = fetched['step']
+            fetched, meta = fetchIodaHistoricBlocking(self.iodaapiurl,
+                    injob['fqid'], startts + amount, amount, 1800)
+            if fetched is not None:
+
+                # Convert the data into a usable pandas dataframe
+                t = fetched['from']
+                step = fetched['step']
+                serieskey = injob['fqid']
+
+                for v in fetched['values']:
+                    res.append({"timestamp": pd.Timestamp(t, unit='s'),
+                                "signalValue": v})
+                    t += step
+
+
+                if finalmeta == {}:
+                    finalmeta = meta
+                    finalmeta['step'] = fetched['step']
+                else:
+                    finalmeta['duration'] += meta['duration'] 
+                    if meta['endtime'] > finalmeta['endtime']:
+                        finalmeta['endtime'] = meta['endtime']
+
+            tofetch -= amount
+            startts += amount
+
+        if len(res) == 0:
+            return None, None
+
         pdseries = pd.DataFrame.from_records(res, index="timestamp")
         pdseries.name = injob['fqid']
-        return pdseries, meta
+        return pdseries, finalmeta
 
     def _actionJob(self, injobmsg, store_db):
         if injobmsg.error():
