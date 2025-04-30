@@ -40,7 +40,7 @@
 # included LICENSE file.
 
 import multiprocessing, queue, signal, time, json
-import asyncio, aiohttp, logging, requests
+import asyncio, aiohttp, logging, requests, threading
 from aiohttp import ClientSession, ClientResponseError
 import urllib.error, urllib.parse
 
@@ -270,24 +270,43 @@ async def fetch(job, session, api):
 
 class AsyncHistoryFetcher(object):
 
-    def __init__(self, iodaapi, inq, outq):
-        self.iodaapi = iodaapi
+    def __init__(self, api, inq, outq):
+        self.api = api
         self.inq = inq
         self.outq = outq
         self.pending = set()
         self.fetchThread = None
+#        self.internal = asyncio.Queue()
+        self.internal = None
+        self._stop_event = threading.Event()
+        self._event_loop = None
+
+    def _reader_thread(self):
+        while not self._stop_event.is_set():
+            try:
+                job = self.inq.get(timeout=0.1)
+                future = asyncio.run_coroutine_threadsafe(
+                        self.internal.put(job), self._event_loop)
+                future.result()
+                if job is None:
+                    break
+            except queue.Empty:
+                continue
+
 
     async def run(self):
         jobcount = 0
         try:
-            job = self.inq.get(False)
+            job = await self.internal.get()
 
             if job is None:
+                logging.warning("Fetcher has received shutdown signal")
                 for p in self.pending:
                     p.cancel()
+                await asyncio.gather(*self.pending, return_exceptions=True)
                 return -1
 
-            task = asyncio.create_task(fetch(job, self.session, self.iodaapi))
+            task = asyncio.create_task(fetch(job, self.session, self.api))
             self.pending.add(task)
 
         except queue.Empty:
@@ -301,7 +320,7 @@ class AsyncHistoryFetcher(object):
 
         for d in done:
             res = d.result()
-            if d.result() is not None:
+            if res is not None:
                 self.outq.put((res[1], res[0]['data']))
         return 0
 
@@ -311,9 +330,14 @@ class AsyncHistoryFetcher(object):
             self.fetchThread.join()
             self.fetchThread = None
 
+            self.inq.close()
+            self.inq.join_thread()
+            self.outq.close()
+            self.outq.join_thread()
+
     def start(self):
         p = multiprocessing.Process(target=runAsyncFetcher, daemon=True,
-            args = (self,), name="ChocolatineAsyncFetcher")
+            args = (self,), name="AsyncFetcher")
         p.start()
         self.fetchThread = p
         return p
@@ -329,13 +353,25 @@ async def asyncmain(fetch):
         x = await fetch.run()
         if x < 0:
             break
-        elif x > 0:
-            time.sleep(x)
-
-    await fetch.session.close()
+        await asyncio.sleep(0.1)
 
 def runAsyncFetcher(fetch):
     signal.signal(signal.SIGINT, signal.SIG_IGN)
-    asyncio.run(asyncmain(fetch))
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
+    fetch._event_loop = loop
+    fetch.internal = asyncio.Queue()
+
+    reader = threading.Thread(target=fetch._reader_thread, daemon=True)
+    reader.start()
+
+    try:
+        loop.run_until_complete(asyncmain(fetch))
+    finally:
+        fetch._stop_event.set()
+        reader.join()
+        loop.run_until_complete(fetch.session.close())
+        loop.close()
 
 
