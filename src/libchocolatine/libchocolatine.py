@@ -265,7 +265,8 @@ class ChocBgpTimeSeries(ChocTimeSeries):
 
 class ChocolatineDetector(object):
 
-    def __init__(self, name, iodaapi, kafkaconf, dbconf, maxarma=3):
+    def __init__(self, name, iodaapi, kafkaconf, dbconf, maxarma=3,
+            compute_arma_model=True):
         self.iodaapi = iodaapi
         self.kafkaconf = kafkaconf
         self.series = {}
@@ -273,6 +274,7 @@ class ChocolatineDetector(object):
         self.name = name
         self.running = None
         self.dbconf = dbconf
+        self.use_default_model_only = not compute_arma_model
 
         self.oob = multiprocessing.Queue()
         self.inq = multiprocessing.Queue()
@@ -383,7 +385,7 @@ class ChocolatineDetector(object):
                 # only replace a model if we are processing more recent data
                 # than the data that was used to generate the old model
                 pass
-            elif not s.arma_requested:
+            elif not s.arma_requested and not self.use_default_model_only:
                 kafkatopic = self.kafkaconf["modellertopic"]
                 self._sendModelRequest(serieskey, timestamp, kafkatopic)
                 s.arma_requested = True
@@ -464,7 +466,8 @@ class ChocolatineDetector(object):
             return None, False
 
         now = time.time()
-        if now - s.modeltime > MODEL_LIFETIME and s.arma_requested == False:
+        if now - s.modeltime > MODEL_LIFETIME and s.arma_requested == False \
+                and self.use_default_model_only == False:
             # our model is getting out of date -- request an update
             # from the model generator
             kafkatopic = self.kafkaconf["modellertopic"]
