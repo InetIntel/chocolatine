@@ -276,7 +276,6 @@ class AsyncHistoryFetcher(object):
         self.outq = outq
         self.pending = set()
         self.fetchThread = None
-#        self.internal = asyncio.Queue()
         self.internal = None
         self._stop_event = threading.Event()
         self._event_loop = None
@@ -300,7 +299,6 @@ class AsyncHistoryFetcher(object):
             job = await self.internal.get()
 
             if job is None:
-                logging.warning("Fetcher has received shutdown signal")
                 for p in self.pending:
                     p.cancel()
                 await asyncio.gather(*self.pending, return_exceptions=True)
@@ -326,17 +324,11 @@ class AsyncHistoryFetcher(object):
 
     def halt(self):
         if self.fetchThread is not None:
-            self.inq.put(None)
             self.fetchThread.join()
             self.fetchThread = None
 
-            self.inq.close()
-            self.inq.join_thread()
-            self.outq.close()
-            self.outq.join_thread()
-
     def start(self):
-        p = multiprocessing.Process(target=runAsyncFetcher, daemon=True,
+        p = multiprocessing.Process(target=runAsyncFetcher, daemon=False,
             args = (self,), name="AsyncFetcher")
         p.start()
         self.fetchThread = p
@@ -373,5 +365,6 @@ def runAsyncFetcher(fetch):
         reader.join()
         loop.run_until_complete(fetch.session.close())
         loop.close()
+        fetch.outq.close()
 
 

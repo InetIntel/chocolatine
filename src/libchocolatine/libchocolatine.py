@@ -41,7 +41,7 @@
 
 
 import multiprocessing, queue, signal, time, sys, socket, os, random
-import json
+import json, logging
 from confluent_kafka import Consumer, KafkaException, Producer
 import statistics
 import pandas as pd
@@ -280,6 +280,7 @@ class ChocolatineDetector(object):
         self.inq = multiprocessing.Queue()
         self.evqueue = multiprocessing.Queue()
 
+
         self.kafkaModelReq = None
         self.kafkaModelReply = None
         self.kafkaReqId = ""
@@ -291,6 +292,12 @@ class ChocolatineDetector(object):
         self.dbsession = None
         self.dbcursor = None
         self.ignorekeys = set()
+
+        self.oob.cancel_join_thread()
+        self.inq.cancel_join_thread()
+        self.evqueue.cancel_join_thread()
+        self.histRequest.cancel_join_thread()
+        self.histReply.cancel_join_thread()
 
     def _sendModelRequest(self, serieskey, timestamp, kafkatopic):
         req = {
@@ -318,7 +325,7 @@ class ChocolatineDetector(object):
         dbpword = os.getenv("PSQL_PASSWORD")
 
         if dbpword is None:
-            print("Unable to determine PSQL password")
+            print("Unable to determine PSQL password for models database")
             return None
 
         self.dbsession = psycopg2.connect(database=dbname, user='postgres', password=dbpword, host=dbhost, port=dbport)
@@ -328,7 +335,10 @@ class ChocolatineDetector(object):
 
     def lookupModelInDatabase(self, serieskey):
 
-        assert(self.dbsession is not None)
+        if self.dbsession is None:
+            print("ERROR: no connection to the models database!")
+            return None
+
         query = """SELECT * FROM public.arma_models WHERE fqid = %s
                 ORDER BY generated_at DESC;"""
         self.dbcursor.execute(query, (serieskey,))
@@ -339,25 +349,27 @@ class ChocolatineDetector(object):
         return x
 
     def start(self):
-        #conf = {'bootstrap.servers': self.kafkaconf['bootstrap-model'],
-        #    'debug': "topic,msg,broker" }
-
-        #self.kafkaModelReq = Producer(**conf)
-
-
         self.kafkaReqId = "%s-%d-%u-%u" % (socket.gethostname(), os.getpid(), time.time(), random.randint(1,10000000))
 
-        p = multiprocessing.Process(target=runChocDetector, daemon=True,
+        p = multiprocessing.Process(target=runChocDetector, daemon=False,
                 args = (self,), name="ChocolatineDetector-%s" % (self.name))
-        p.start()
         self.running = p
+        p.start()
         return p
 
     def halt(self):
+        self.histRequest.put(None)
+        self.histRequest.close()
+
         if self.running is not None:
             self.oob.put(None)
             self.running.join()
             self.running = None
+
+        if self.oob:
+            self.oob.close()
+        if self.evqueue:
+            self.evqueue.close()
 
     def queueLiveData(self, serieskey, timestamp, value):
         self.inq.put((0, serieskey, timestamp, value))
@@ -658,7 +670,11 @@ class ChocolatineDetector(object):
             job = self.oob.get(False)
             return -1
         except queue.Empty:
-            pass
+            if self.justidle:
+                time.sleep(0.5)
+                return 0
+            else:
+                pass
 
         try:
             serieskey, histdata = self.histReply.get(False)
@@ -730,10 +746,9 @@ def runChocDetector(det):
     det.kafkaModelReply.subscribe([det.kafkaconf['modellertopic'] + \
             ".generated"])
 
-    det.connectDatabase()
-
-    # TEMPORARY, for testing purposes
-    det.addTestSeries()
+    det.justidle = False
+    if det.connectDatabase() is None:
+        det.justidle = True
 
     while True:
         x = det.run()
@@ -742,6 +757,8 @@ def runChocDetector(det):
         elif x > 0:
             time.sleep(x)
 
+    if det.inq:
+        det.inq.close()
     if det.kafkaModelReply:
         det.kafkaModelReply.close()
 
